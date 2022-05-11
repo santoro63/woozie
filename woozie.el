@@ -36,6 +36,26 @@
 ;; these variables the user should not really have to change
 (defvar woozie--msg-buff "*Woozie*") ;;  The temp buffer to which woozie writes its reports"
 
+;;------------------------------------------------------------------------------------------
+;; woozie-mode definition
+;;------------------------------------------------------------------------------------------
+
+(defvar woozie-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map "C-cwv" 'woozie-wf-validate)
+    (define-key map "C-cws" 'woozie-wf-show-vars)
+    (define-key map "C-cwc" 'woozie-wf-validate-config)
+    (define-key map "C-cwh" 'woozie-hive-show-vars)
+    (define-key map "C-cwa" 'woozie-wf-mk-ascii)
+    (define-key map "C-cwd" 'woozie-wf-view-dag)
+    map
+    ))
+  
+(define-derived-mode woozie-mode
+  nxml-mode "woozie"
+  "Major mode supporting Oozie workflow editing."
+  )
+ 
 ;;----------------------------------------------------------------------------------------
 ;; user (interactive) functions
 ;;----------------------------------------------------------------------------------------
@@ -165,13 +185,15 @@
   "Perform validations on the oozie workflow xml defined in the current buffer."
   (interactive)
   (let ( (b (current-buffer))
-	 (dom (libxml-parse-xml-region (point-min) (point-max))) )
+	 (dom (woozie--get-wf-root)))
     (with-output-to-temp-buffer woozie--msg-buff
       (switch-to-buffer woozie--msg-buff)
       (woozie--msg "=======================================================")
       (woozie--msg "Validating workflow.....")
       (woozie--validate-action-names dom)
       (woozie--validate-action-transitions dom)
+      (woozie--msg "Validating parameters....")
+      (woozie--validate-parameters dom b)
       (switch-to-buffer b))))
 
 (defun woozie-wf-validate-config (config-file)
@@ -181,7 +203,9 @@ Provides a list of variables not defined in the configuration file."
   (let* ( (b (current-buffer))
 	  (wf-vars (woozie--wf-vars-list) )
 	  (config-vars (woozie--properties-from-file config-file))
-	  (missing-vars (cl-set-difference wf-vars config-vars :test 'string=)))
+	  (missing-vars (cl-set-difference wf-vars config-vars :test #'string=))
+	  (unused-vars (cl-set-difference config-vars wf-vars :test #'string=))
+	  )
     (with-output-to-temp-buffer woozie--msg-buff
       (switch-to-buffer woozie--msg-buff)
       (if missing-vars
@@ -190,6 +214,12 @@ Provides a list of variables not defined in the configuration file."
 	    (dolist (var missing-vars)
 	      (woozie--msg (concat "---   * " var))))
 	(woozie--msg "+++ All workflow variables are defined."))
+      (if unused-vars
+	  (progn
+	    (woozie--msg "--- Unused variable definitions:")
+	    (dolist (var unused-vars)
+	      (woozie--msg (concat "--- * " var))))
+	(woozie--msg "+++ All config properties are used in the workflow."))
       (switch-to-buffer b))))
 
 (defun woozie-wf-show-vars ()
@@ -209,7 +239,7 @@ A hive var is any field delimited by '${hivevar:' and '}"
 (defun woozie-wf-mk-ascii ()
   "Show an (ASCII) graph representation of a workflow."
   (interactive)
-  (let* ((dom (libxml-parse-xml-region (point-min) (point-max)))
+  (let* ((dom (woozie--get-wf-root))
 	 (graph (woozie--wf-transitions dom))
 	 (happy-path (woozie--graph-path-from "start" graph))
 	 (buf (generate-new-buffer "wfgraph")))
@@ -219,7 +249,7 @@ A hive var is any field delimited by '${hivevar:' and '}"
 (defun woozie-wf-mk-dot ()
   "Create a buffer with a dot format representation of the workflow in the current buffer."
   (interactive)
-  (let* ( (dom (libxml-parse-xml-region (point-min) (point-max)))
+  (let* ( (dom (woozie--get-wf-root))
 	  (nodes (woozie--wf-flow-nodes dom))
 	  (ok-transitions (cl-remove-if (lambda (tr) (equal 'error (caddr tr))) (woozie--wf-transitions dom)))
 	  (happy-transitions (woozie--wf-transitions-hp ok-transitions))
@@ -237,6 +267,8 @@ A hive var is any field delimited by '${hivevar:' and '}"
       (insert (concat "  " (car edge) " -> " (cadr edge) "\n")))
     (insert "}\n")))
 
+
+   
 ;;------------------------------------------------------------------------------------------------
 ;; DOT functions
 ;;
@@ -267,6 +299,11 @@ A hive var is any field delimited by '${hivevar:' and '}"
 
 ;; notes:
 ;;  + transitions are represented as a triple: (FROM . TO . type) where type is either 'ok or 'error
+
+(defun woozie--get-wf-root (&optional dom)
+  "Gets the workflow-app element from the DOM element passed to it or the current buffer."
+  (let ( (dm (if dom dom (libxml-parse-xml-region (point-min) (point-max)))) )
+    (car (dom-by-tag dm 'workflow-app))))
 
 (defun woozie--wf-transitions (dom)
   "Return a list of all the transitions in the workflow specified by DOM.
@@ -382,11 +419,14 @@ Happy path is defined as all traversals reachable from node named 'start'."
   (dolist (elem list)
     (woozie--msg elem)))
   
-(defun woozie--wf-vars-list ()
-  "Return a list of all vars defined in the current buffer."
-  (save-excursion
-    (goto-char (point-min))
-    (cl-remove-if-not 'woozie--valid-wf-var (woozie--find-delimited-from-point "${" "}"))))
+(defun woozie--wf-vars-list (&optional bfer)
+  "Return a list of all vars defined in BFER or the current buffer."
+  (let ( (cb (current-buffer)))
+    (save-excursion
+      (switch-to-buffer (buffer-name bfer))
+      (goto-char (point-min))
+      (cl-remove-if-not 'woozie--valid-wf-var (woozie--find-delimited-from-point "${" "}")))
+    ))
 
 (defun woozie--properties-from-file (config-file)
   "Return a list of the property names defined in CONFIG-FILE."
@@ -434,6 +474,42 @@ Happy path is defined as all traversals reachable from node named 'start'."
 	  (woozie--msg (concat "---    " elem))))
       (woozie--msg (concat "+++ " (number-to-string (length action-names)) " node names, all unique")))))
 
+(defun woozie--validate-parameters (dom b)
+  "Prints a report on the <parameters> section of the DOM and B"
+  (let* ( (param-names (woozie--wf-param-names dom))
+	  (var-names (woozie--wf-vars-list b))
+	  (repeated-names (woozie--list-duplicates param-names))
+	  (unused-names   (cl-set-difference param-names var-names :test #'string=))
+	  (undefined-names (cl-set-difference var-names param-names :test #'string=))
+	  )
+    (woozie--msg (concat (number-to-string (length var-names)) " variables found"))
+    (woozie--msg (concat (number-to-string (length param-names)) " parameters found."))
+    (if repeated-names
+	(progn
+	  (woozie--msg "--- PARAMETER ERRORS!")
+	  (woozie--msg "--- The following properties are defined multiple times")
+	  (dolist (elem repeated-names)
+	    (woozie--msg (concat "---   " elem)))))
+    (if unused-names
+	(progn
+	  (woozie--msg "--- PARAMETER WARNINGS: ")
+	  (woozie--msg "--- The following properties are defined but not used in this workflow.")
+	  (dolist (elem unused-names)
+	    (woozie--msg (concat "---  " elem)))))
+    (if undefined-names
+	(progn
+	  (woozie--msg "--- PARAMETER WARNINGS:")
+	  (woozie--msg "--- The following variables do not have a corresponding parameter definition")
+	  (dolist (elem undefined-names)
+	    (woozie--msg (concat "--- " elem)))))
+  ))
+
+(defun woozie--wf-param-names (dom)
+  "Return a list of values for all /parameters/property/name elements in the DOM."
+  (let ( (parameters-el (car (dom-by-tag dom 'parameters))))
+    (mapcar #'dom-text (dom-by-tag parameters-el 'name) )))
+  
+  
 (defun woozie--wf-is-flow-node-p (node)
   "Return non-nil if NODE participates in a flow."
   (member (dom-tag node) '(start action decision join fork end kill)))
@@ -465,13 +541,6 @@ Flow nodes are all nodes that the workflow can transition through, including `st
   "Return a list with the value of ATTRIB for all NODES in the list."
   (mapcar (lambda (n) (dom-attr n attrib)) nodes))
     
-(defun woozie--find-all-delimited (delim1 delim2 &optional include-dupes)
- "Find all strings delimited by DELIM1 and DELIM2 in the current buffer.
-Non-nil INCLUDE-DUPES allows the returned strings to be duplicates."
-  (save-excursion
-    (goto-char (point-min))
-    (woozie--find-delimited-from-point delim1 delim2 include-dupes)))
-
 (defun woozie--find-delimited-from-point (delim1 delim2 &optional include-dupes)
   "Return a list with all values in the current buffer bounded by DELIM1 and DELIM2.
 Values are unique unless INCLUDE-DUPES is non-nil."

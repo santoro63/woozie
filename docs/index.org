@@ -17,7 +17,17 @@ Then copy it to where you want it reside and add the following to your emacs con
 #+END_SRC
 
 And that is all there is to it. 
-Several functions starting with =woozie-= are now available to aid you in defining Oozie workflows.
+Several functions starting with =woozie-= are now available to aid you in creating, visualizing and validating Oozie workflows.
+
+* Woozie Mode
+
+Once the file is loaded, you can open a buffer where you will build your workflow XML definition and type =M-x woozie-mode=
+which will set woozie-mode as the buffer's major mode.
+This mode is an extension of the nXML mode included with Emacs for XML processing and extends it with key bindings for
+creating, validating and visualizing workflows.
+
+For documentation on the mode type =C-hm= when your current buffer is in woozie-mode.
+All woozie key bindings starts with =C-cw=.
 
 * Use Cases
 
@@ -59,12 +69,17 @@ Workflow creation is not the only area in which Woozie adds value.
 It can also help by checking and validating the workflow you have created.
 
 You can type  =M-x woozie-wf-validate= and it will check whether:
-+ Action names are unique
-+ All transitions are valid
++ Action names are unique;
++ All transitions are valid;
++ All action nodes have an incoming transition.
++ All properties defined in the <parameters> element are unique;
++ All properties defined in the <parameters> element correspond to a variable in the workflow;
++ All variables present in the workflows have a corresponding entry in the <parameters> element. 
 
 You can also check if the workflow with respect to its configuration file.
 Type =M-x woozie-wf-validate-config=, passing the configuration file as a parameter and Emacs will list all 
-the variables in the workflow definition that are missing from the configuration file.
+the variables in the workflow definition that are missing from the configuration file, as well as
+the variables in the config file that are not present in the workflow definition.
 
 
 ** Workflow Visualization
